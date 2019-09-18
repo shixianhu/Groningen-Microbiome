@@ -255,19 +255,3 @@ p2=ggplot(sub_table, aes(x=Cluster, y=`postclean.reads`,fill=Cluster)) +
   guides(fill=guide_legend(nrow=1, byrow=TRUE))
 ggarrange(p1,p2)
 ```
-
-# a
-```{r warning=FALSE,message=F}
-```
-
-# a
-```{r warning=FALSE,message=F}
-```
-
-# a
-```{r warning=FALSE,message=F}
-```
-
-# a
-```{r warning=FALSE,message=F}
-```
