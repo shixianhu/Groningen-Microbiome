@@ -1,0 +1,293 @@
+---
+title: "MethodCompareEnterotype"
+author: "Shixian"
+date: "2019/9/18"
+output: html_document
+---
+
+```{r warning=FALSE,message=F}
+library(vegan)
+library(ggplot2)
+library(cluster)
+library(RColorBrewer)
+library(ggalluvial)
+library(reshape2)
+library(ggsci)
+library(randomcoloR)
+require(cowplot)
+library(ggpubr)
+library(ggrepel)
+library(gridExtra)
+library(plotly)
+CompositionTable <- function(x,n){ # change the metaphlan result to a composition table, select top n most abundant features
+  
+  require(foreach)
+  x[is.na(x)]=0
+  mean_value <- data.frame(Taxa=colnames(x), Mean_abundance=colSums(x)/nrow(x))
+  most <- as.character(mean_value[order(mean_value$Mean_abundance,decreasing = T),]$Taxa[1:n])
+  #print(paste("Most abundant taxa is",most,sep = " "))
+  
+  composition_table <- foreach(i=1:length(most),.combine = rbind) %do%  {
+    return.string = data.frame(ID = rownames(x), Relative=x[,most[i]],Level=colnames(x[,most[i],drop=F]))
+  }
+  
+  first <- composition_table[grep(most[1],composition_table$Level),]
+  first <- first[order(first$Relative,decreasing = T),]
+  level <- as.factor(first$ID)
+  composition_table$ID <- factor(composition_table$ID,levels = level)
+  
+  return(composition_table)
+}
+
+AverageTable <- function(compositiontable){
+  
+  averageTable=matrix(nrow = 1,ncol = length(unique(compositiontable$Level)))
+  rownames(averageTable)=deparse(substitute(compositiontable))
+  colnames(averageTable)=c(as.character(unique(compositiontable$Level)))
+  
+  for(i in unique(compositiontable$Level)){
+    subset=compositiontable$Relative[compositiontable$Level==i]
+    avr=mean(subset[!is.na(subset)])
+    averageTable[1,i]=avr
+  }
+  averageTable=as.data.frame(averageTable)
+  averageTable$Others=1-sum(averageTable[!is.na(averageTable)])
+  averageTable=as.data.frame(t(averageTable))
+  averageTable$Taxa=rownames(averageTable)
+  
+  return(averageTable)
+}
+```
+
+## Load data and rename
+
+```{r warning=FALSE,message=F}
+apk=read.table("APK_metaphlan_merged.txt",sep = "\t",header = T,row.names = 1,
+               stringsAsFactors = F,check.names = F)
+fsk=read.table("FSK_metaphlan_merged.txt",sep = "\t",header = T,row.names = 1,
+                stringsAsFactors = F,check.names = F)
+apk=as.data.frame(t(apk/100))
+fsk=as.data.frame(t(fsk/100))
+rownames(apk)=gsub("_metaphlan","",rownames(apk))
+rownames(fsk)=gsub("_metaphlan","",rownames(fsk))
+coupling=read.table("APK_to_FSK_key.txt")
+colnames(coupling)=c("APK","FSK")
+coupling$Name=paste("Sample",seq(1,297),sep = "_")
+apk=apk[rownames(apk) %in% coupling$APK,]
+fsk=fsk[rownames(fsk) %in% coupling$FSK,]
+apk=apk[order(rownames(apk)),]
+coupling=coupling[order(coupling$APK),]
+rownames(apk)=coupling$Name
+fsk=fsk[order(rownames(fsk)),]
+coupling=coupling[order(coupling$FSK),]
+rownames(fsk)=coupling$Name
+```
+
+## Keep genus and data filtering
+
+```{r warning=FALSE,message=F}
+# keep only genus
+apk_genus=apk[,grep("g__",colnames(apk))]
+apk_genus=apk_genus[,grep("s__",colnames(apk_genus),invert = T)]
+colnames(apk_genus)=lapply(colnames(apk_genus),function(x){
+  strsplit(x,"g__")[[1]][2]
+})
+fsk_genus=fsk[,grep("g__",colnames(fsk))]
+fsk_genus=fsk_genus[,grep("s__",colnames(fsk_genus),invert = T)]
+colnames(fsk_genus)=lapply(colnames(fsk_genus),function(x){
+  strsplit(x,"g__")[[1]][2]
+})
+
+# remove low present bacteria and recaculate relative abundance 
+cutoff=0.1
+apk_genus = apk_genus[,colSums(apk_genus > 0) >= cutoff*nrow(apk_genus)]
+for(i in 1:nrow(apk_genus)){
+  apk_genus[i,]=apk_genus[i,]/sum(apk_genus[i,])
+}
+fsk_genus = fsk_genus[,colSums(fsk_genus > 0) >= cutoff*nrow(fsk_genus)]
+for(i in 1:nrow(fsk_genus)){
+  fsk_genus[i,]=fsk_genus[i,]/sum(fsk_genus[i,])
+}
+```
+
+## Composition compare between two methods
+
+```{r warning=FALSE,message=F}
+apk_table=CompositionTable(apk_genus,ncol(apk_genus))
+fsk_table=CompositionTable(fsk_genus,ncol(fsk_genus))
+apk_average=AverageTable(apk_table)
+fsk_average=AverageTable(fsk_table)
+
+intersect_list=intersect(rownames(fsk_average),rownames(apk_average))
+intersect_list=intersect_list[intersect_list!="Others"]
+apk_genus=apk_genus[order(rownames(apk_genus)),]
+fsk_genus=fsk_genus[order(rownames(fsk_genus)),]
+intersect=data.frame(Overlapp=intersect_list,FoldChange=NA,Pvalue=NA,FDR=NA)
+for(i in 1:nrow(intersect)){
+  bug=as.character(intersect$Overlapp[i])
+  intersect$FoldChange[i]=apk_average[bug,]$apk_table/fsk_average[bug,]$fsk_table
+  mm=wilcox.test(fsk_genus[,bug],apk_genus[,bug],paired = T)
+  intersect$Pvalue[i]=mm$p.value
+}
+intersect$FClog=log2(intersect$FoldChange)
+intersect$FDR=p.adjust(intersect$Pvalue)
+intersect$threshold[intersect$FDR<0.05]="Significant"
+intersect$threshold[intersect$FDR>0.05]="Non-Significant"
+
+a <- list()
+for (i in seq_len(nrow(intersect))) {
+  m <- intersect[i, ]
+  a[[i]] <- list(
+    x = m[["FClog"]],
+    y = -log10(m[["FDR"]]),
+    text = m[["Overlapp"]],
+    xref = "x",
+    yref = "y",
+    showarrow = F,
+    ax = 20,
+    ay = -40
+  )
+}
+p <- plot_ly(data = intersect, x = ~FClog, y = ~(-log10(FDR)), 
+             text = ~Overlapp, mode = "markers", color = ~threshold,
+             marker=list(size=5),alpha=0.5,colors=c("#6F99ADFF","#BC3C29FF")) %>% 
+  layout(title ="Volcano Plot") %>%
+  layout(annotations = a)
+p
+```
+
+## Compare correlation among samples of Prevotella and Bacteroides
+
+```{r warning=FALSE,message=F}
+compare_prevotella=merge(apk_genus[,"Prevotella",drop=F],fsk_genus[,"Prevotella",drop=F],by="row.names",all=F)
+colnames(compare_prevotella)=c("ID","apk","fsk")
+compare_prevotella=na.omit(compare_prevotella)
+cor.test(compare_prevotella$apk,compare_prevotella$fsk,method = "spearman")
+p1=ggplot(compare_prevotella, aes(x=apk, y=fsk)) + 
+  geom_point()+ggtitle("Correlation")+
+  geom_smooth(method=lm)
+p2=ggplot(data=compare_prevotella, aes(log(apk))) + 
+  geom_histogram(fill="grey")+ggtitle("Prevotella in APK")
+p3=ggplot(data=compare_prevotella, aes(log(fsk))) + 
+  geom_histogram(fill="grey")+ggtitle("Prevotella in FSK")
+  
+compare_bacteroides=merge(apk_genus[,"Bacteroides",drop=F],fsk_genus[,"Bacteroides",drop=F],by="row.names",all=F)
+colnames(compare_bacteroides)=c("ID","apk","fsk")
+compare_bacteroides=na.omit(compare_bacteroides)
+cor.test(compare_bacteroides$apk,compare_bacteroides$fsk,method = "spearman")
+p4=ggplot(compare_bacteroides, aes(x=apk, y=fsk)) + 
+  geom_point()+ggtitle("Correlation")+
+  geom_smooth(method=lm)
+p5=ggplot(data=compare_bacteroides, aes(log(apk))) + 
+  geom_histogram(fill="grey")+ggtitle("Bacteroides in APK")
+p6=ggplot(data=compare_bacteroides, aes(log(fsk))) + 
+  geom_histogram(fill="grey")+ggtitle("Bacteroides in FSK")
+ggarrange(p2,p3,p1,p5,p6,p4,ncol = 3,nrow = 2)
+```
+
+## Compare PCoA
+
+```{r warning=FALSE,message=F}
+# remove NA samples
+apk_genus=na.omit(apk_genus)
+fsk_genus=na.omit(fsk_genus)
+fsk_genus=fsk_genus[rownames(fsk_genus) %in% rownames(apk_genus),]
+
+beta_diversity=vegdist(apk_genus,method = "bray")
+pcoa_analysis=as.data.frame(cmdscale(beta_diversity,k=4))
+pcoa_analysis=merge(pcoa_analysis,apk_genus[,c("Bacteroides","Prevotella","Ruminococcus"),drop=F],by="row.names",all=F)
+rownames(pcoa_analysis)=pcoa_analysis$Row.names
+pcoa_analysis[,1]=NULL
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+p1=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Bacteroides),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+p2=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Prevotella),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+p3=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Ruminococcus),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+
+beta_diversity=vegdist(fsk_genus,method = "bray")
+pcoa_analysis=as.data.frame(cmdscale(beta_diversity,k=4))
+pcoa_analysis=merge(pcoa_analysis,fsk_genus[,c("Bacteroides","Prevotella","Ruminococcus"),drop=F],by="row.names",all=F)
+rownames(pcoa_analysis)=pcoa_analysis$Row.names
+pcoa_analysis[,1]=NULL
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+p4=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Bacteroides),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+p5=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Prevotella),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+p6=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Ruminococcus),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+
+```
+
+
+```{r warning=FALSE,message=F}
+# APK vs FSK, colored by Bacteroides
+ggarrange(p1,p4,ncol = 2)
+```
+
+```{r warning=FALSE,message=F}
+# APK vs FSK, colored by Prevotella
+ggarrange(p2,p5,ncol = 2)
+```
+
+```{r warning=FALSE,message=F}
+# APK vs FSK, colored by Ruminococcus
+ggarrange(p3,p6,ncol = 2)
+```
+
+## Remove Prevotella from FSK samples
+
+```{r warning=FALSE,message=F}
+fsk_genus_noP=fsk_genus[,colnames(fsk_genus)!="Prevotella"]
+beta_diversity=vegdist(fsk_genus_noP,method = "bray")
+pcoa_analysis=as.data.frame(cmdscale(beta_diversity,k=4))
+pcoa_analysis=merge(pcoa_analysis,fsk_genus_noP[,c("Bacteroides","Ruminococcus"),drop=F],by="row.names",all=F)
+rownames(pcoa_analysis)=pcoa_analysis$Row.names
+pcoa_analysis[,1]=NULL
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+p1=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Bacteroides),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+p3=ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Ruminococcus),size=2) + theme_bw()+sc+theme(legend.position = 'top')
+ggarrange(p1,p3,ncol = 2)
+```
+
+## LLD sample
+
+```{r }
+# LLD 920 samples
+lld_taxa=read.table("LLD_taxonomy_metaphlan2_092017.txt",sep = "\t",header = T,check.names = F,
+                    stringsAsFactors = F,row.names = 1)
+lld_id_change=read.table("eqtl_LLD_linkage.txt",sep = "\t")
+lld_taxa=lld_taxa[,colnames(lld_taxa) %in% lld_id_change$V2]
+colnames(lld_taxa)=lld_id_change$V1
+lld_taxa=as.data.frame(t(lld_taxa))
+
+# keep only genus and data filtering
+genus=lld_taxa[,grep("g__",colnames(lld_taxa))]
+genus=genus[,grep("s__",colnames(genus),invert = T)]
+colnames(genus)=lapply(colnames(genus),function(x){
+  strsplit(x,"g__")[[1]][2]
+})
+cutoff=0.1
+genus = genus[,colSums(genus > 0) >= cutoff*nrow(genus)]
+for(i in 1:nrow(genus)){
+  genus[i,]=genus[i,]/sum(genus[i,])
+}
+genus[is.na(genus)]=0
+beta_diversity=vegdist(genus,method = "bray")
+pcoa_analysis=as.data.frame(cmdscale(beta_diversity,k=4))
+pcoa_analysis=merge(pcoa_analysis,genus[,c("Bacteroides","Prevotella","Ruminococcus"),drop=F],by="row.names",all=F)
+rownames(pcoa_analysis)=pcoa_analysis$Row.names
+pcoa_analysis[,1]=NULL
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Bacteroides),size=2) + theme_bw()+sc
+ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Prevotella),size=2) + theme_bw()+sc
+ggplot (pcoa_analysis, aes(V1,V2)) + geom_point(aes(colour =Ruminococcus),size=2) + theme_bw()+sc
+```
+
+
+
+
