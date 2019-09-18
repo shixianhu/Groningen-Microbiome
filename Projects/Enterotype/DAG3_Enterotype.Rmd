@@ -1,0 +1,273 @@
+---
+title: "DAG3_enterotype"
+author: "Shixian"
+date: "2019/9/18"
+output: html_document
+---
+
+```{r warning=FALSE,message=F}
+library(vegan)
+library(ggplot2)
+library(cluster)
+library(RColorBrewer)
+library(ggalluvial)
+library(reshape2)
+library(ggsci)
+library(randomcoloR)
+require(cowplot)
+library(ggpubr)
+library(ggrepel)
+library(gridExtra)
+library(plotly)
+CompositionTable <- function(x,n){ # change the metaphlan result to a composition table, select top n most abundant features
+  
+  require(foreach)
+  x[is.na(x)]=0
+  mean_value <- data.frame(Taxa=colnames(x), Mean_abundance=colSums(x)/nrow(x))
+  most <- as.character(mean_value[order(mean_value$Mean_abundance,decreasing = T),]$Taxa[1:n])
+  #print(paste("Most abundant taxa is",most,sep = " "))
+  
+  composition_table <- foreach(i=1:length(most),.combine = rbind) %do%  {
+    return.string = data.frame(ID = rownames(x), Relative=x[,most[i]],Level=colnames(x[,most[i],drop=F]))
+  }
+  
+  first <- composition_table[grep(most[1],composition_table$Level),]
+  first <- first[order(first$Relative,decreasing = T),]
+  level <- as.factor(first$ID)
+  composition_table$ID <- factor(composition_table$ID,levels = level)
+  
+  return(composition_table)
+}
+
+AverageTable <- function(compositiontable){
+  
+  averageTable=matrix(nrow = 1,ncol = length(unique(compositiontable$Level)))
+  rownames(averageTable)=deparse(substitute(compositiontable))
+  colnames(averageTable)=c(as.character(unique(compositiontable$Level)))
+  
+  for(i in unique(compositiontable$Level)){
+    subset=compositiontable$Relative[compositiontable$Level==i]
+    avr=mean(subset[!is.na(subset)])
+    averageTable[1,i]=avr
+  }
+  averageTable=as.data.frame(averageTable)
+  averageTable$Others=1-sum(averageTable[!is.na(averageTable)])
+  averageTable=as.data.frame(t(averageTable))
+  averageTable$Taxa=rownames(averageTable)
+  
+  return(averageTable)
+}
+```
+
+# Load data, keep genus, and filter data
+
+```{r warning=FALSE,message=F}
+dag3_meta=read.table("DAG3.metadata.txt",sep = "\t",check.names = F,stringsAsFactors = F,header = T)
+dag3_meta=dag3_meta[,c("DAG3_sampleID","postclean.reads","postclean.gc","conc.ng.ul","vol.ul","age",
+                             "gender","BMI")]
+rownames(dag3_meta)=dag3_meta$DAG3_sampleID
+dag3=read.table("DAG3_metaphlan_merged.txt",sep = "\t",header = T,row.names = 1,
+               stringsAsFactors = F,check.names = F)
+dag3=as.data.frame(t(dag3/100))
+rownames(dag3)=gsub("_metaphlan","",rownames(dag3))
+batch=read.table("dag3_batches_samples.txt",sep = "\t",header = F,stringsAsFactors = F)
+batch=batch[!duplicated(batch$V2),]
+rownames(batch)=batch$V2
+colnames(batch)=c("Batch","Name")
+dag3_meta=merge(dag3_meta,batch,by="row.names",all=F)
+rownames(dag3_meta)=dag3_meta$Row.names
+dag3_meta$Row.names=NULL
+
+# filter and re-calculate
+dag3_genus=dag3[,grep("g__",colnames(dag3))]
+dag3_genus=dag3_genus[,grep("s__",colnames(dag3_genus),invert = T)]
+colnames(dag3_genus)=lapply(colnames(dag3_genus),function(x){
+  strsplit(x,"g__")[[1]][2]
+})
+cutoff=0.1
+dag3_genus = dag3_genus[,colSums(dag3_genus > 0) >= cutoff*nrow(dag3_genus)]
+for(i in 1:nrow(dag3_genus)){
+  dag3_genus[i,]=dag3_genus[i,]/sum(dag3_genus[i,])
+}
+```
+
+# Binominal distribution of Prevotella
+
+```{r warning=FALSE,message=F}
+par(mfrow=c(2,2))
+p1=hist(log2(dag3_genus$Prevotella),breaks = 100,main = "Prevotella",xlab = "Relative Abundance(log2)")
+p2=hist(log2(dag3_genus$Bacteroides),breaks = 100,main = "Bacteroides",xlab = "Relative Abundance(log2)")
+p3=hist(log2(dag3_genus$Ruminococcus),breaks = 100,main = "Ruminococcus",xlab = "Relative Abundance(log2)")
+p4=hist(log2(dag3_genus$Alistipes),breaks = 100,main = "Alistipes",xlab = "Relative Abundance(log2)")
+```
+
+# Correlate tachniqual parameters to Prevotella, Bacteroides and Ruminococcus
+
+```{r warning=FALSE,message=F}
+techniq=merge(dag3_meta,dag3_genus,by="row.names",all=F)
+techniq[techniq=="F"]=0
+techniq[techniq=="M"]=1
+techniq$gender=as.numeric(techniq$gender)
+```
+
+```{r warning=FALSE,message=F}
+# Prevotella
+myplots <- list()
+count = 1
+for(i in 3:9){
+  tech=colnames(techniq)[i]
+  df=data.frame(x=(techniq[,"Prevotella"]),y=techniq[,tech])
+  mm=(cor.test(df$x,df$y,method = "spearman"))
+  pvalue=round(mm$p.value,5)
+  cor=round(mm$estimate,5)
+  myplots[[count]]=ggplot(df, aes(x=x, y=y)) + 
+                     geom_point()+
+                     geom_smooth(method=lm)+xlab("Prevotella")+ylab(tech)+
+                     labs(title = paste("Pvalue is ",pvalue),subtitle = paste("CorrelationCoefficient is ",cor))+theme(plot.title = element_text(size=10),plot.subtitle = element_text(size = 10))
+  count = count + 1
+}
+plot_grid(plotlist=list(myplots[[1]],myplots[[2]]),ncol = 2)
+plot_grid(plotlist=list(myplots[[3]],myplots[[4]]),ncol = 2)
+```
+
+```{r warning=FALSE,message=F}
+# Bacteroides
+myplots <- list()
+count = 1
+for(i in 3:9){
+  tech=colnames(techniq)[i]
+  df=data.frame(x=(techniq[,"Bacteroides"]),y=techniq[,tech])
+  mm=(cor.test(df$x,df$y,method = "spearman"))
+  pvalue=round(mm$p.value,5)
+  cor=round(mm$estimate,5)
+  myplots[[count]]=ggplot(df, aes(x=x, y=y)) + 
+                     geom_point()+
+                     geom_smooth(method=lm)+xlab("Bacteroides")+ylab(tech)+
+                     labs(title = paste("Pvalue is ",pvalue),subtitle = paste("CorrelationCoefficient is ",cor))+theme(plot.title = element_text(size=10),plot.subtitle = element_text(size = 10))
+  count = count + 1
+}
+plot_grid(plotlist=list(myplots[[1]],myplots[[2]]),ncol = 2)
+plot_grid(plotlist=list(myplots[[3]],myplots[[4]]),ncol = 2)
+```
+
+```{r warning=FALSE,message=F}
+# Ruminococcus
+myplots <- list()
+count = 1
+for(i in 3:9){
+  tech=colnames(techniq)[i]
+  df=data.frame(x=(techniq[,"Ruminococcus"]),y=techniq[,tech])
+  mm=(cor.test(df$x,df$y,method = "spearman"))
+  pvalue=round(mm$p.value,5)
+  cor=round(mm$estimate,5)
+  myplots[[count]]=ggplot(df, aes(x=x, y=y)) + 
+                     geom_point()+
+                     geom_smooth(method=lm)+xlab("Ruminococcus")+ylab(tech)+
+                     labs(title = paste("Pvalue is ",pvalue),subtitle = paste("CorrelationCoefficient is ",cor))+theme(plot.title = element_text(size=10),plot.subtitle = element_text(size = 10))
+  count = count + 1
+}
+plot_grid(plotlist=list(myplots[[1]],myplots[[2]]),ncol = 2)
+plot_grid(plotlist=list(myplots[[3]],myplots[[4]]),ncol = 2)
+```
+
+# Two enterotypes. 
+
+```{r warning=FALSE,message=F}
+pcoa=read.table("lplc.cluster.2.txt",stringsAsFactors = F)
+pcoa$Row.names=gsub("_metaphlan","",pcoa$Row.names)
+pcoa=merge(pcoa,techniq,by="Row.names",all=F)
+```
+
+# PCoa plot by techniqual parameters
+
+```{r warning=FALSE,message=F}
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+p0=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =as.factor(Cluster)),size=1) + theme_bw()+scale_color_npg()+ggtitle("Two Enterotypes")
+p1=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =`postclean.reads`),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+p2=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =`postclean.gc`),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+p3=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =`conc.ng.ul`),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+p4=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =`vol.ul`),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+p5=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =`Batch`),size=1) + theme_bw()+scale_color_npg()+ggtitle("Total batch")
+p6=ggplot (pcoa[pcoa$Batch=="dag3_batch1",], aes(V1,V2)) + geom_point(colour ="#BC3C29FF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch1")
+p7=ggplot (pcoa[pcoa$Batch=="dag3_batch2",], aes(V1,V2)) + geom_point(colour ="#0072B5FF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch2")
+p8=ggplot (pcoa[pcoa$Batch=="dag3_batch3",], aes(V1,V2)) + geom_point(colour ="#E18727FF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch3")
+p9=ggplot (pcoa[pcoa$Batch=="dag3_batch4",], aes(V1,V2)) + geom_point(colour ="#20854EFF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch4")
+p10=ggplot (pcoa[pcoa$Batch=="dag3_batch5",], aes(V1,V2)) + geom_point(colour ="#7876B1FF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch5")
+p11=ggplot (pcoa[pcoa$Batch=="dag3_batch6",], aes(V1,V2)) + geom_point(colour ="#6F99ADFF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch6")
+p12=ggplot (pcoa[pcoa$Batch=="dag3_batch7",], aes(V1,V2)) + geom_point(colour ="#FFDC91FF",size=1) + theme_bw()+scale_color_npg()+ggtitle("dag3_batch7")
+# plot two enterotypes
+ggarrange(p0)
+# plot reads and gc content
+ggarrange(p1,p2,ncol = 2)
+# plot concerntration and volunm
+ggarrange(p3,p4,ncol = 2)
+# plot batch effects
+ggarrange(p5)
+ggarrange(p6,p7,p8,ncol = 3)
+ggarrange(p9,p10,p11,p12,ncol = 2,nrow = 2)
+```
+
+# PCoa plot by Prevotella and Bacteroides
+
+```{r warning=FALSE,message=F}
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_colour_gradientn(colours = myPalette(200))
+p1=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =Prevotella),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+p2=ggplot (pcoa, aes(V1,V2)) + geom_point(aes(colour =Bacteroides),size=1) + theme_bw()+sc+
+  theme(legend.position = 'top')
+ggarrange(p1,p2)
+```
+
+# Compare two enterotypes
+
+```{r warning=FALSE,message=F}
+# compare the relative abundance of Prevotella between two enterotypes
+prevotella_present=pcoa[pcoa$Prevotella>0,,drop=F]
+prevotella_present$Group="Presence"
+prevotella_absent=pcoa[pcoa$Prevotella==0,,drop=F]
+prevotella_absent$Group="Absence"
+sub_table=rbind(prevotella_present,prevotella_absent)
+sub_table$Cluster=factor(sub_table$Cluster)
+
+mm=wilcox.test(sub_table[sub_table$Cluster=="1",]$Prevotella,
+               sub_table[sub_table$Cluster=="2",]$Prevotella)
+mm$p.value
+p1=ggplot(sub_table, aes(x=Cluster, y=Prevotella,fill=Cluster)) + 
+  geom_boxplot()+xlab("Enterotypes")+
+  scale_fill_brewer(palette="Dark2")+theme(axis.text.x = element_text(size=0),
+                                           legend.position="bottom")+
+  guides(fill=guide_legend(nrow=1, byrow=TRUE))
+
+# compare the read counts between two enterotypes
+mm=wilcox.test(sub_table[sub_table$Cluster=="1",]$postclean.reads,
+               sub_table[sub_table$Cluster=="2",]$postclean.reads)
+mm$p.value
+p2=ggplot(sub_table, aes(x=Cluster, y=`postclean.reads`,fill=Cluster)) + 
+  geom_boxplot()+xlab("Enterotypes")+
+  scale_fill_brewer(palette="Dark2")+theme(axis.text.x = element_text(size=0),
+                                           legend.position="bottom")+
+  guides(fill=guide_legend(nrow=1, byrow=TRUE))
+ggarrange(p1,p2)
+```
+
+# a
+```{r warning=FALSE,message=F}
+```
+
+# a
+```{r warning=FALSE,message=F}
+```
+
+# a
+```{r warning=FALSE,message=F}
+```
+
+# a
+```{r warning=FALSE,message=F}
+```
